@@ -1,0 +1,25 @@
+# System Design Write-Up
+
+## Overall Architecture
+
+The system is a REST API (Node.js/Express) backed by SQLite, with a React SPA frontend and Socket.IO for real-time seat-map updates. SQLite was chosen over Postgres/MongoDB for this assignment's scope: it requires no external service to run, and — via Write-Ahead Logging plus a single-writer transaction model — it gives strong write serialization for free, which is exactly the property seat-hold concurrency needs. The schema is relational: `events` reference `venues`; `seats` belong to an `event` and an `event_category` (categories are per-event so an organiser can reprice the same venue differently per show); `holds`, `bookings`, `booking_seats`, and `waitlist` capture the transactional state. A background scheduler (in-process `setInterval`, documented as a candidate for a dedicated cron/worker in a larger deployment) sweeps expired holds and stale waitlist offers every 15 seconds. Business logic lives in `services/*` (hold, booking, waitlist), kept independent of the Express layer so the same functions back both REST routes and the scheduler.
+
+## Seat Hold and TTL Mechanism
+
+Selecting a seat calls `POST /events/:id/holds`, which performs a single atomic SQL statement — `UPDATE seats SET status='HELD' WHERE id=? AND status='AVAILABLE'` — inside a transaction, and inserts a `holds` row with `expires_at = now + HOLD_TTL_SECONDS` (default 10 minutes, configurable via env var). The frontend shows a countdown from this timestamp, but that countdown is cosmetic: the backend scheduler is the actual source of truth. Every sweep interval, it queries `holds` where `status='ACTIVE' AND expires_at < now`, and for each one flips the hold to `EXPIRED` and the seat back to `AVAILABLE` inside a transaction, then emits a `seat:update` event over Socket.IO so every connected client's seat map updates without a refresh. Booking confirmation independently re-validates `expires_at` at commit time, so even if the sweep hasn't run yet, a stale hold can never be confirmed into a booking.
+
+## Concurrency Prevention
+
+The core guarantee — two customers can never both hold or book the same seat — rests on making the "check available, then reserve" step a single atomic write rather than a read followed by a separate write. `UPDATE ... WHERE status='AVAILABLE'` either affects one row (the caller wins) or zero rows (the caller loses and receives a 409); there is no window between check and write for a second request to interleave. SQLite additionally serializes all writers against one database file, and `busy_timeout` (5s) makes a losing transaction wait for the winner to finish rather than erroring out spuriously under load. Booking confirmation uses the same pattern: it re-checks each hold's ownership, status, and expiry inside one transaction before flipping seats to `BOOKED`, so a hold that a concurrent request is simultaneously expiring or converting cannot be double-spent. This was verified with an automated test that fires 2-way and 10-way concurrent hold requests at the same seat: in every run, exactly one request succeeds and the rest receive a 409. The same conditional-UPDATE pattern maps directly onto Postgres (`SELECT ... FOR UPDATE` or an equivalent conditional `UPDATE`) if the project were scaled beyond SQLite's single-writer model.
+
+## Waitlist Auto-Assignment Flow
+
+A customer can join a category's waitlist only once that category has zero `AVAILABLE` seats, and only once per category (enforced by a unique constraint on `event_id + category_id + user_id`). The queue is strict FIFO by `created_at`. When a booking is cancelled, `cancelBooking` releases each seat to `AVAILABLE` and then, per freed seat, calls `offerSeatToNextInQueue`, which finds the oldest `WAITING` entry in that category, atomically flips the seat to `HELD` (reserving it for that specific customer, not the general pool), marks the waitlist entry `OFFERED` with an `offer_expires_at`, and emails the customer a link to complete the booking. If nobody is waiting, the seat simply stays `AVAILABLE` for anyone.
+
+## Time-Limited Offer Handling
+
+An offer's TTL (default 15 minutes, configurable) is enforced the same way hold TTLs are: the scheduler's second sweep finds `OFFERED` entries past their `offer_expires_at`, marks them `EXPIRED`, releases the reserved seat back to `AVAILABLE`, and immediately re-runs `offerSeatToNextInQueue` for the next person in line — so an unclaimed offer cascades down the queue without manual intervention. If the customer instead accepts in time via `POST /waitlist/:id/confirm`, the already-reserved seat is converted into a short-lived hold scoped to the offer window and passed through the normal booking-confirmation path, reusing the same validation and QR/email logic as a direct purchase rather than duplicating it.
+
+## Trade-offs
+
+SQLite trades horizontal scalability for zero-ops simplicity appropriate to this assignment; the in-process scheduler trades sub-second precision for simplicity (worst case ~15s late release). Both are documented, sensible defaults, not oversights.

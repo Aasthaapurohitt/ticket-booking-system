@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Marquee — Ticket Booking System
 
 A full-stack ticket booking platform for movies and concerts: customers book seats from a live visual map, held seats auto-release on checkout abandonment, sold-out categories run a waitlist with automatic seat re-assignment on cancellation, and every confirmed booking generates a QR-code ticket delivered by email.
@@ -173,3 +174,6 @@ Not deployed as part of this submission (no hosting credentials available in the
 - SQLite is file-based; a horizontally-scaled deployment would need to move to Postgres (the atomic-UPDATE concurrency pattern carries over directly).
 - No payment step — bookings are confirmed as a pure reservation flow per the assignment scope.
 - Email delivery depends on outbound network access to the configured SMTP host; in fully network-restricted environments only the Ethereal preview-link fallback will work.
+=======
+# ticket-booking-system
+>>>>>>> 303132af30d355f6f26e9efe4c19f8131c163c75

@@ -1,4 +1,4 @@
-<<<<<<< HEAD
+deployment link- https://ticket-booking-system-atqp2u46g-aasthapurohit83-3239s-projects.vercel.app/
 # Marquee — Ticket Booking System
 
 A full-stack ticket booking platform for movies and concerts: customers book seats from a live visual map, held seats auto-release on checkout abandonment, sold-out categories run a waitlist with automatic seat re-assignment on cancellation, and every confirmed booking generates a QR-code ticket delivered by email.
